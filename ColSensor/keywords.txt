@@ -1,0 +1,5 @@
+ColSensor	KEYWORD1
+Mode	KEYWORD2
+Digital_out	KEYWORD2
+Test	KEYWORD2
+Get	KEYWORD2
