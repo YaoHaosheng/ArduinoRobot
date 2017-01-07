@@ -1,0 +1,159 @@
+/*先按黑红绿蓝黄排好方块，将LED和光传感器对准黑方块。
+  机械臂摆动后，才可以按下后方触碰开关，开始记录颜色。
+  每闪一次则移到下个方块，第6次检测环境光。
+  记录过程中要保持传感器正对方块，且与方块距离基本不变。
+  完成之后再次按下后方的触碰开关，机器开始运行。
+  方块在传送带上应先经过光传感器，再经过机械臂。如果方向有错，
+  要交换传送带红黑线的引脚。
+  传感器检测到有色方块，机械臂会转动，将方块推下*/
+
+/*LED灯——红绿蓝分别接D2、D3、D4，黑线接负极
+  触碰——前方（靠近传送带）接D5，后方接D6，黑线接负极
+  传送带——接ML两个引脚
+  机械臂——接MR两个引脚
+  光敏——绿线接A0。红线接正极，黑线接负极*/
+
+#define N 6
+int s1 = 70, s2 = 90; //s1表示传送带速度，s2表示机械臂速度
+int front = 1, behind = 1; //触碰开关被按下时读取到的数字量
+int ori = 1; //机械臂推方块的电平
+int R = 2, G = 3, B = 4, OUT = A0;
+int SWC1 = 5, SWC2 = 6;
+int BELT = 7, ARM = 8;
+int SPEED1 = 9, SPEED2 = 10;
+int LED = 11;
+
+int Color[3];//用于保存检测到的三个模拟量
+int SF[N][3];//用于保存6种情况（黑、红、绿、蓝、黄、无方块）的三个模拟量
+
+//检测模拟量，并保存在Color中
+void Open(int t = 5) {
+  digitalWrite(R, HIGH);
+  delay(t);
+  Color[0] = analogRead(OUT);
+  digitalWrite(R, LOW);
+  digitalWrite(G, HIGH);
+  delay(t);
+  Color[1] = analogRead(OUT);
+  digitalWrite(G, LOW);
+  digitalWrite(B, HIGH);
+  delay(t);
+  Color[2] = analogRead(OUT);
+  digitalWrite(B, LOW);
+}
+
+//检测某种方块的模拟量，并保存在SF中。参数k取0-5，分别代表黑、红、绿、蓝、黄、无方块
+void Test(int k, int n = 10) {
+  int temp[3] = {0, 0, 0};
+  for (int i = 0; i < n; ++i) {
+    Open();
+    for (int j = 0; j < 3; ++j) {
+      temp[j] += Color[j];
+    }
+  }
+  for (int i = 0; i < 3; ++i) {
+    temp[i] /= n;
+    SF[k][i] = temp[i]; //取n次检测结果的平均
+  }
+}
+
+//分别检测黑、红、绿、蓝、黄、无方块时的模拟量，并记录到SF中
+void Modify() {
+  for (int i = 0; i < N; ++i) {
+    Test(i);
+    delay(2000);
+  }
+}
+
+/*检测方块，根据记录在SF中的模拟量，判断方块属于何种颜色，
+  同样地，返回值0-5分别代表黑、红、绿、蓝、黄、无方块*/
+int Check() {
+  int p = 0, sum1 = 0, sum2 = 30000;
+  Open();
+  for (int i = 0; i < N; ++i) {
+    for (int j = 0; j < 3; ++j) {
+      sum1 += abs(SF[i][j] - Color[j]); //计算距离（用绝对值代替一般欧氏距离中的平方值进行计算）
+    }
+    if (sum1 < sum2) {
+      p = i;
+      sum2 = sum1;
+    }
+    sum1 = 0;
+  }
+  return p;
+}
+
+//自动提升机械臂速度。limit表示推方块耗时上限
+void Boost(unsigned long t, unsigned long limit = 200) {
+  if (t > (1000 + limit))return;
+  if (t > limit) {
+    s1 = t * s1 / limit;
+    s2 = t * s2 / limit;
+    s1 = s1 > 255 ? 255 : s1;
+    s2 = s2 > 255 ? 255 : s2;
+  }
+}
+
+//推方块。v表示电机速度，t表示推迟执行的时间
+int Push(int v = s2, int t = 0) {
+  delay(t);
+  digitalWrite(ARM, ori);
+  analogWrite(SPEED2, v);
+  digitalWrite(LED, HIGH);
+  unsigned long time = millis();
+  while (digitalRead(SWC1) != front);
+  digitalWrite(ARM, 1 - ori);
+  digitalWrite(LED, LOW);
+  while (digitalRead(SWC2) != behind);
+  time = millis() - time;
+  analogWrite(SPEED2, 0);
+  Boost(time);
+}
+
+//初始化。v表示传送带速度
+void Init(int v = s1) {
+  pinMode(SWC1, INPUT_PULLUP);
+  pinMode(SWC2, INPUT_PULLUP);
+  front = 1 - digitalRead(SWC1);
+  behind = 1 - digitalRead(SWC2);
+  pinMode(R, OUTPUT);
+  pinMode(G, OUTPUT);
+  pinMode(B, OUTPUT);
+  pinMode(OUT, INPUT);
+  pinMode(BELT, OUTPUT);
+  pinMode(ARM, OUTPUT);
+  pinMode(SPEED1, OUTPUT);
+  pinMode(SPEED2, OUTPUT);
+  digitalWrite(BELT, HIGH);
+  analogWrite(SPEED1, 0);
+  digitalWrite(ARM, ori);
+  analogWrite(SPEED2, s2);
+  while (digitalRead(SWC1) != front && (digitalRead(SWC2) != behind || (ori = 0)));
+  analogWrite(SPEED2, 0); delay(1000);
+  while (digitalRead(SWC2) != behind);
+  Modify();
+  while (digitalRead(SWC2) != behind);
+  digitalWrite(BELT, HIGH);
+  analogWrite(SPEED1, v);
+}
+
+//执行任务。n表示对同一有色方块的检测次数，减少失误
+int Run(int n = 5) {
+  int c = 0;
+  int m = n;
+  while (m) {
+    c = Check();
+    if (c != 0 && c != (N - 1))--m;
+    else m = n;
+  }
+  Push();
+  return c;
+}
+
+void setup() {
+  Init();
+}
+
+void loop() {
+  Run();
+}
